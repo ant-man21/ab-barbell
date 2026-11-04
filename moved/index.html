@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>A/B Barbell has moved</title>
+<meta name="theme-color" content="#C4122F">
+<style>
+:root { --bg: #ECEEF1; --surface: #FFFFFF; --ink: #15181C; --muted: #5D6570; --line: #D6DAE0; --accent: #C4122F; --accent-ink: #FFFFFF; }
+@media (prefers-color-scheme: dark) { :root { --bg: #101214; --surface: #1A1D21; --ink: #ECEEF1; --muted: #9BA3AD; --line: #2C3138; --accent: #F2546B; --accent-ink: #1A0508; color-scheme: dark; } }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 16px/1.5 system-ui, -apple-system, sans-serif; }
+main { max-width: 480px; margin: 0 auto; padding: calc(32px + env(safe-area-inset-top, 0px)) max(20px, env(safe-area-inset-right, 0px)) 32px max(20px, env(safe-area-inset-left, 0px)); display: flex; flex-direction: column; gap: 14px; }
+h1 { font-family: "Arial Narrow", "Helvetica Neue", Arial, sans-serif; font-stretch: condensed; text-transform: uppercase; font-size: 34px; line-height: 1; margin: 0; letter-spacing: .02em; }
+p { margin: 0; color: var(--muted); }
+a.btn, button { display: block; text-align: center; padding: 14px; border-radius: 12px; font: 600 17px system-ui, sans-serif; text-decoration: none; border: 0; }
+a.btn { background: var(--accent); color: var(--accent-ink); }
+button { background: var(--surface); color: var(--ink); border: 1px solid var(--line); }
+ol { margin: 0; padding-left: 20px; color: var(--muted); }
+</style>
+</head>
+<body>
+<main>
+  <h1>A/B Barbell has moved</h1>
+  <p>The app now has sign-in with Face ID, syncs your log and sends workout reminders. It lives at a new address:</p>
+  <a class="btn" id="go" href="https://ab-barbell.ant21san.workers.dev/">Open the new A/B Barbell</a>
+  <div id="backup" hidden>
+    <p style="margin-bottom:10px">This copy has <b id="count"></b> saved. Back them up first, then in the new app go to <b>Program → Restore</b> after you create your account.</p>
+    <button type="button" id="save">Back up my workouts</button>
+  </div>
+  <p>Then add the new one to your Home Screen:</p>
+  <ol>
+    <li>Open the new address in Safari.</li>
+    <li>Tap <b>Share → Add to Home Screen</b>.</li>
+    <li>Delete this old icon from your Home Screen.</li>
+  </ol>
+</main>
+<script>
+let data = null;
+try { const s = JSON.parse(localStorage.getItem('ab-barbell-log.v1') || 'null'); if (s && s.sessions && s.sessions.length && !s.sample) data = s; } catch (e) {}
+if (data) {
+  document.getElementById('backup').hidden = false;
+  document.getElementById('count').textContent = data.sessions.length + (data.sessions.length === 1 ? ' workout' : ' workouts');
+  document.getElementById('save').onclick = async () => {
+    const file = new File([JSON.stringify(data, null, 1)], 'ab-barbell-backup.json', { type: 'application/json' });
+    if (navigator.canShare && navigator.canShare({ files: [file] })) { try { await navigator.share({ files: [file] }); return; } catch (e) { if (e.name === 'AbortError') return; } }
+    const a = document.createElement('a'); a.href = URL.createObjectURL(file); a.download = file.name; document.body.appendChild(a); a.click(); a.remove();
+  };
+} else {
+  setTimeout(() => location.replace(document.getElementById('go').href), 1500);
+}
+</script>
+</body>
+</html>

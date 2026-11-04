@@ -26,7 +26,8 @@ Cloudflare builds and publishes the app and server straight from this repo
 (Cloudflare **Workers & Pages → Create → Import a repository → ab-barbell**).
 Every push to `main` goes live automatically; no keys or GitHub secrets are needed.
 
-The app's address is `https://ab-barbell.<your-subdomain>.workers.dev`.
+The app lives at **https://ab-barbell.ant21san.workers.dev/**. The old GitHub Pages
+address now shows a page pointing there (`moved/`).
 
 ## Install on iPhone
 
