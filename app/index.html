@@ -249,6 +249,22 @@ th { font-size: 11px; font-weight: 600; letter-spacing: .08em; text-transform: u
 .tab svg { width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 .tab[aria-current="page"] { color: var(--accent); }
 
+/* Sign-in */
+.auth-hero { display: flex; flex-direction: column; gap: 8px; padding-block: 8px 4px; }
+.auth-hero p { margin: 0; color: var(--muted); max-width: 40ch; }
+.field { display: flex; flex-direction: column; gap: 6px; }
+.field label { font-weight: 500; }
+.field input { padding: 11px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); }
+.code-box { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 22px; letter-spacing: .08em; text-align: center; padding: 14px; border-radius: 12px; background: var(--bg); border: 1px dashed var(--line); user-select: all; -webkit-user-select: all; }
+details.more summary { cursor: pointer; color: var(--accent); font-weight: 600; font-size: 14px; padding: 4px 0; }
+details.more[open] summary { margin-bottom: 8px; }
+.status-line { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: none; }
+.dot.on { background: var(--good); }
+.dot.off { background: var(--warn); }
+.primary.small { font-size: 17px; padding: 12px; }
+.primary:disabled, .secondary:disabled { opacity: .55; }
+
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 </style>
 </head>
@@ -263,6 +279,7 @@ th { font-size: 11px; font-weight: 600; letter-spacing: .08em; text-transform: u
     <section class="view" id="view-progress" hidden></section>
     <section class="view" id="view-history" hidden></section>
     <section class="view" id="view-program" hidden></section>
+    <section class="view" id="view-auth" hidden></section>
   </main>
 </div>
 
@@ -283,6 +300,7 @@ th { font-size: 11px; font-weight: 600; letter-spacing: .08em; text-transform: u
   </div>
 </nav>
 
+<script src="vendor/simplewebauthn-browser.umd.min.js"></script>
 <script>
 /* ================================================================
    THE PROGRAM. Tell Claude what to change and it edits this block.
@@ -410,13 +428,251 @@ function load() {
   try { const raw = localStorage.getItem(STORE_KEY); if (raw) { const s = JSON.parse(raw); if (s && s.v === 1) return s; } } catch (e) {}
   return null;
 }
-function save() { try { localStorage.setItem(STORE_KEY, JSON.stringify(S)); } catch (e) {} }
+function persist() { try { localStorage.setItem(STORE_KEY, JSON.stringify(S)); } catch (e) {} }
+function save() { S.updatedAt = Date.now(); persist(); Cloud.queue(); }
+const lsGet = k => { try { return localStorage.getItem(k); } catch (e) { return null; } };
+const lsSet = (k, v) => { try { v == null ? localStorage.removeItem(k) : localStorage.setItem(k, v); } catch (e) {} };
 
 let S = load() || freshState();
 // Make sure any lift added to PROGRAM later gets a target.
 for (const id in PROGRAM.lifts) if (!S.targets[id]) S.targets[id] = freshTargets()[id];
 
-const ui = { tab: 'today', lift: 'squat', metric: 'strength', armClear: false, armDel: null };
+const ui = { tab: 'today', lift: 'squat', metric: 'strength', armClear: false, armDel: null, auth: null, busy: false, recovery: null };
+
+/* ---------- account, sync and notifications (Cloudflare server at /api) ---------- */
+const isIOS = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+const standalone = window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+function b64uToBytes(str) { const s = str.replace(/-/g, '+').replace(/_/g, '/') + '==='.slice((str.length + 3) % 4); return Uint8Array.from(atob(s), c => c.charCodeAt(0)); }
+function reminderInfo() {
+  const w = PROGRAM.workouts[S.next];
+  return {
+    days: S.schedule.days, time: S.schedule.time,
+    tz: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
+    title: w.name + ' today',
+    body: w.lifts.map(id => PROGRAM.lifts[id].name).join(' · ') + '. Tap to start.',
+    lastDate: S.sessions.length ? S.sessions[S.sessions.length - 1].date : null
+  };
+}
+const Cloud = {
+  token: lsGet('ab-barbell-token'),
+  user: (() => { try { return JSON.parse(lsGet('ab-barbell-user') || 'null'); } catch (e) { return null; } })(),
+  known: lsGet('ab-barbell-cloud') === '1',      // this copy of the app has a server behind it
+  config: null, online: null, dirty: false, syncing: false, lastSync: +(lsGet('ab-barbell-lastsync') || 0), pushOn: false, t: null,
+  get signedIn() { return !!this.token; },
+
+  async api(path, opts = {}) {
+    let res;
+    try {
+      res = await fetch('/api' + path, {
+        method: opts.method || 'GET',
+        headers: { 'Content-Type': 'application/json', ...(this.token ? { Authorization: 'Bearer ' + this.token } : {}) },
+        body: opts.body ? JSON.stringify(opts.body) : undefined
+      });
+    } catch (e) { this.online = false; throw new Error('You’re offline. Your log is saved on this phone and will sync later.'); }
+    let data = {}; try { data = await res.json(); } catch (e) {}
+    if (res.status === 401 && this.token) { this.forget(); render(); }
+    if (!res.ok) throw new Error(data.error || 'The server didn’t respond. Try again in a minute.');
+    this.online = true;
+    return data;
+  },
+  async init() {
+    try { this.config = await this.api('/config'); this.known = true; lsSet('ab-barbell-cloud', '1'); } catch (e) {}
+    if (this.known && !this.signedIn && lsGet('ab-barbell-skipauth') !== '1') { ui.auth = 'start'; render(); }
+    if (this.signedIn) {
+      await this.sync();
+      await this.refreshPush();
+    }
+  },
+  remember(token, user) { this.token = token; this.user = user; lsSet('ab-barbell-token', token); lsSet('ab-barbell-user', JSON.stringify(user)); lsSet('ab-barbell-skipauth', null); },
+  forget() { this.token = null; this.user = null; this.pushOn = false; lsSet('ab-barbell-token', null); lsSet('ab-barbell-user', null); lsSet('ab-barbell-push', null); },
+
+  queue() { if (!this.signedIn) return; this.dirty = true; clearTimeout(this.t); this.t = setTimeout(() => this.push(), 800); },
+  async push() {
+    if (!this.signedIn) return;
+    try {
+      await this.api('/state', { method: 'PUT', body: { state: S, updatedAt: S.updatedAt || Date.now(), reminder: reminderInfo() } });
+      this.dirty = false; this.markSynced();
+    } catch (e) {}
+    syncLabel();
+  },
+  async sync() {
+    if (!this.signedIn || this.syncing) return;
+    this.syncing = true;
+    try {
+      const remote = await this.api('/state');
+      if (remote.state && remote.updatedAt > (S.updatedAt || 0)) {
+        S = remote.state;
+        for (const id in PROGRAM.lifts) if (!S.targets[id]) S.targets[id] = freshTargets()[id];
+        persist(); render();
+      } else if ((S.updatedAt || 0) > remote.updatedAt || this.dirty || !remote.state) {
+        await this.api('/state', { method: 'PUT', body: { state: S, updatedAt: S.updatedAt || Date.now(), reminder: reminderInfo() } });
+        this.dirty = false;
+      }
+      this.markSynced();
+    } catch (e) {}
+    this.syncing = false;
+    syncLabel();
+  },
+  markSynced() { this.lastSync = Date.now(); lsSet('ab-barbell-lastsync', String(this.lastSync)); },
+
+  // ---- passkeys ----
+  async signUp(name) {
+    const { options, ticket } = await this.api('/auth/register/options', { method: 'POST', body: { name } });
+    const response = await SimpleWebAuthnBrowser.startRegistration({ optionsJSON: options });
+    const r = await this.api('/auth/register/verify', { method: 'POST', body: { response, ticket } });
+    this.remember(r.token, r.user);
+    S.updatedAt = S.updatedAt || Date.now(); persist();
+    await this.sync();
+    return r.recoveryCode;
+  },
+  async signIn() {
+    const { options, ticket } = await this.api('/auth/login/options', { method: 'POST', body: {} });
+    const response = await SimpleWebAuthnBrowser.startAuthentication({ optionsJSON: options });
+    const r = await this.api('/auth/login/verify', { method: 'POST', body: { response, ticket } });
+    this.remember(r.token, r.user);
+    await this.sync();
+    await this.refreshPush();
+  },
+  async recover(code) {
+    const r = await this.api('/auth/recover', { method: 'POST', body: { code } });
+    this.remember(r.token, r.user);
+    await this.sync();
+    return r.recoveryCode;
+  },
+  async addPasskey() {
+    const { options, ticket } = await this.api('/auth/register/options', { method: 'POST', body: {} });
+    const response = await SimpleWebAuthnBrowser.startRegistration({ optionsJSON: options });
+    await this.api('/auth/register/verify', { method: 'POST', body: { response, ticket } });
+  },
+  async signOut() {
+    try { await this.api('/auth/logout', { method: 'POST' }); } catch (e) {}
+    try { const reg = await navigator.serviceWorker?.getRegistration(); const sub = await reg?.pushManager?.getSubscription(); if (sub) await sub.unsubscribe(); } catch (e) {}
+    this.forget();
+    S = freshState(); persist();
+  },
+
+  // ---- notifications ----
+  pushSupported() { return 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window; },
+  async refreshPush() {
+    if (!this.signedIn || !this.pushSupported() || lsGet('ab-barbell-push') !== '1') { this.pushOn = false; return; }
+    try {
+      const reg = await navigator.serviceWorker.ready;
+      const sub = await reg.pushManager.getSubscription();
+      if (sub && Notification.permission === 'granted') {
+        await this.api('/push/subscribe', { method: 'POST', body: { subscription: sub.toJSON() } });
+        this.pushOn = true;
+      } else { this.pushOn = false; lsSet('ab-barbell-push', null); }
+    } catch (e) {}
+  },
+  async enablePush() {
+    // Ask first, while the tap still counts as the user's own action (Safari requires this).
+    const perm = await Notification.requestPermission();
+    if (perm !== 'granted') throw new Error('Notifications are off for A/B Barbell. Turn them on in iPhone Settings → Notifications → A/B Barbell.');
+    const reg = await navigator.serviceWorker.ready;
+    let sub = await reg.pushManager.getSubscription();
+    if (!sub) {
+      const cfg = this.config || await this.api('/config');
+      sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64uToBytes(cfg.vapidPublicKey) });
+    }
+    await this.api('/push/subscribe', { method: 'POST', body: { subscription: sub.toJSON() } });
+    lsSet('ab-barbell-push', '1'); this.pushOn = true;
+    await this.push();
+  },
+  async disablePush() {
+    const reg = await navigator.serviceWorker.ready;
+    const sub = await reg.pushManager.getSubscription();
+    if (sub) { await this.api('/push/unsubscribe', { method: 'POST', body: { endpoint: sub.endpoint } }); await sub.unsubscribe(); }
+    lsSet('ab-barbell-push', null); this.pushOn = false;
+  },
+  restStarted(seconds) { if (this.pushOn) this.api('/rest', { method: 'POST', body: { seconds } }).catch(() => {}); },
+  restCancelled() { if (this.pushOn) this.api('/rest', { method: 'DELETE' }).catch(() => {}); }
+};
+function syncLabel() { const el = document.getElementById('syncState'); if (el) el.innerHTML = syncStatusHtml(); }
+function syncStatusHtml() {
+  if (!Cloud.signedIn) return '';
+  if (Cloud.online === false || Cloud.dirty) return '<span class="dot off"></span>Not synced yet. Your log is safe on this phone and will sync when you’re online.';
+  if (!Cloud.lastSync) return '<span class="dot"></span>Syncing…';
+  const mins = Math.round((Date.now() - Cloud.lastSync) / 60000);
+  return '<span class="dot on"></span>Synced ' + (mins < 1 ? 'just now' : mins < 60 ? mins + ' min ago' : 'on ' + fmtDate(iso(new Date(Cloud.lastSync))));
+}
+function errMsg(e) {
+  if (e && e.name === 'NotAllowedError') return 'Cancelled. Try again when you’re ready.';
+  if (e && e.name === 'InvalidStateError') return 'This device already has a passkey for your account.';
+  return (e && e.message) || 'Something went wrong. Try again.';
+}
+async function busy(btn, fn) {
+  if (ui.busy) return; ui.busy = true;
+  const label = btn ? btn.textContent : ''; if (btn) { btn.disabled = true; btn.textContent = 'Working…'; }
+  try { await fn(); } catch (e) { toast(errMsg(e)); }
+  finally { ui.busy = false; if (btn && btn.isConnected) { btn.disabled = false; btn.textContent = label; } }
+}
+
+/* ---------- SIGN-IN SCREENS ---------- */
+function renderAuth() {
+  const v = $('#view-auth');
+  if (ui.auth === 'code') {
+    v.innerHTML = `
+      <div class="auth-hero"><div class="eyebrow">One more step</div><h1 class="display">Save your recovery code</h1>
+        <p>If you ever lose all your Apple devices, this code gets you back into your account. It works once, and you’ll get a new one each time you use it. Save it in Notes or a password manager.</p></div>
+      <div class="code-box" id="recCodeShow">${esc(ui.recovery || '')}</div>
+      <div class="btn-row"><button type="button" class="secondary" data-act="copycode">Copy code</button></div>
+      <button type="button" class="primary small" data-act="authdone">I saved it</button>`;
+    return;
+  }
+  if (ui.auth === 'addkey') {
+    v.innerHTML = `
+      <div class="auth-hero"><div class="eyebrow">You’re back in</div><h1 class="display">Add Face ID sign-in</h1>
+        <p>Save a passkey on this device so next time you can sign in with Face ID instead of a recovery code.</p></div>
+      <button type="button" class="primary small" data-act="addkey">Save a passkey</button>
+      <button type="button" class="linkbtn" data-act="authdone">Not now</button>`;
+    return;
+  }
+  v.innerHTML = `
+    <div class="auth-hero"><div class="eyebrow">Welcome</div><h1 class="display">Sign in</h1>
+      <p>Your account backs up your log, keeps it in sync across your devices and sends your workout reminders. There’s no password: you sign in with Face ID.</p></div>
+    <div class="card">
+      <button type="button" class="primary small" data-act="login">Sign in with Face ID</button>
+      <p class="hint">Uses the passkey saved in your iCloud Keychain, so it works on your iPhone and your Mac.</p>
+    </div>
+    <div class="card">
+      <div class="eyebrow">New here?</div>
+      <div class="field"><label for="acctName">Your name</label><input id="acctName" type="text" autocomplete="nickname" maxlength="40" placeholder="First name"></div>
+      <button type="button" class="secondary" data-act="signup">Create account</button>
+      ${Cloud.config && !Cloud.config.signupsOpen ? '<p class="hint">New accounts are turned off for this app.</p>' : ''}
+    </div>
+    <details class="more"><summary>Use a recovery code</summary>
+      <div class="field"><label for="recInput">Recovery code</label><input id="recInput" type="text" autocapitalize="characters" autocomplete="one-time-code" placeholder="ABCD-EFGH-JKLM-NPQR"></div>
+      <div class="btn-row" style="margin-top:8px"><button type="button" class="secondary" data-act="recover">Sign in with code</button></div>
+    </details>
+    <button type="button" class="linkbtn" data-act="skipauth">Use without an account on this device</button>`;
+}
+
+/* ---------- ACCOUNT CARD (Program tab) ---------- */
+function accountCard() {
+  if (!Cloud.known) return '';
+  if (!Cloud.signedIn) return `
+    <h2 class="section">Account</h2>
+    <div class="card">
+      <p class="hint">You’re using the app without an account, so your log is only on this device and there are no notifications.</p>
+      <button type="button" class="secondary" data-act="openauth">Sign in or create account</button>
+    </div>`;
+  let notif;
+  if (Cloud.pushOn) notif = `<div class="status-line"><span class="dot on"></span>Notifications are on for this device.</div>
+      <div class="btn-row"><button type="button" class="secondary" data-act="pushtest">Send a test</button><button type="button" class="secondary" data-act="pushoff">Turn off</button></div>`;
+  else if (!Cloud.pushSupported()) notif = `<div class="status-line"><span class="dot off"></span>${isIOS && !standalone ? 'To get notifications, open A/B Barbell from its Home Screen icon. In Safari, tap Share → Add to Home Screen first.' : 'This browser can’t receive notifications.'}</div>`;
+  else notif = `<button type="button" class="primary small" data-act="pushon">Turn on notifications</button>
+      <p class="hint">Reminders on your training days, and an alert when rest is up even if your phone is locked.</p>`;
+  return `
+    <h2 class="section">Account</h2>
+    <div class="card">
+      <div class="row"><span>Signed in as <b>${esc(Cloud.user?.name || '')}</b></span><button type="button" class="linkbtn" data-act="signout">${ui.armOut ? 'Tap again to sign out' : 'Sign out'}</button></div>
+      <div class="status-line" id="syncState">${syncStatusHtml()}</div>
+    </div>
+    <div class="card">
+      <div class="eyebrow">Notifications</div>
+      ${notif}
+    </div>`;
+}
 
 function lastBW() { return S.bw.length ? S.bw[S.bw.length - 1].v : null; }
 function lastSessionFor(id) { for (let i = S.sessions.length - 1; i >= 0; i--) { const l = S.sessions[i].lifts.find(x => x.id === id); if (l) return { s: S.sessions[i], l }; } return null; }
@@ -544,7 +800,7 @@ function finishWorkout() {
   }
   S.next = cur.workout === 'A' ? 'B' : 'A';
   S.current = null;
-  stopRest();
+  stopRest(true);
   save();
   toast(wk.name + ' saved. Next up: ' + PROGRAM.workouts[S.next].name + '.');
   render();
@@ -557,6 +813,7 @@ function startRest(fail) {
   timer.total = fail ? PROGRAM.rest.fail : PROGRAM.rest.success;
   timer.end = Date.now() + timer.total * 1000;
   clearInterval(timer.id); timer.id = setInterval(tickRest, 250); tickRest();
+  Cloud.restStarted(timer.total);
 }
 function tickRest() {
   const left = Math.ceil((timer.end - Date.now()) / 1000), el = $('#timer');
@@ -571,7 +828,10 @@ function tickRest() {
   $('#tLabel').textContent = timer.total > PROGRAM.rest.success ? 'Rest. Missed reps, so take 3 minutes.' : 'Rest';
   $('#tBar').style.width = (100 * (1 - left / timer.total)) + '%';
 }
-function stopRest() { clearInterval(timer.id); timer.id = null; $('#timer').hidden = true; }
+function stopRest(cancel) {
+  if (cancel && timer.id && timer.end > Date.now()) Cloud.restCancelled();
+  clearInterval(timer.id); timer.id = null; $('#timer').hidden = true;
+}
 
 /* ---------- PROGRESS ---------- */
 function seriesFor(id, metric) {
@@ -759,13 +1019,19 @@ function renderProgram() {
     <h1 class="display">Program</h1>
     <div class="ask"><b>Changing the program?</b> Describe it to Claude in chat, for example “swap OHP for rows” or “make squat 3×10”. Claude edits the app and your history carries over.</div>
 
+    ${accountCard()}
+
     <h2 class="section">Reminders</h2>
     <div class="card">
       <div class="eyebrow">Training days</div>
       <div class="days" role="group" aria-label="Training days">${[1, 2, 3, 4, 5, 6, 0].map(d => `<button type="button" class="day" data-act="day" data-d="${d}" aria-pressed="${S.schedule.days.includes(d)}">${DOW[d]}</button>`).join('')}</div>
       <div class="row"><label for="remTime">Remind me at</label><input id="remTime" type="time" value="${S.schedule.time}"></div>
-      <p class="hint">On these days the Today tab shows your workout as due. To get an alert on your phone, add the reminder to your calendar. If you change your days or time, add it again and delete the old event.</p>
-      <div class="btn-row"><button type="button" class="secondary" data-act="cal">Add reminders to Calendar</button></div>
+      ${Cloud.pushOn
+        ? '<p class="hint">You’ll get a notification at this time on these days, naming the workout that’s up next. No reminder on a day you’ve already trained.</p>'
+        : Cloud.signedIn
+          ? '<p class="hint">On these days the Today tab shows your workout as due. Turn on notifications above to get an alert on your phone.</p>'
+          : `<p class="hint">On these days the Today tab shows your workout as due. To get an alert on your phone${Cloud.known ? ', sign in and turn on notifications, or' : ','} add the reminder to your calendar.</p>
+      <div class="btn-row"><button type="button" class="secondary" data-act="cal">Add reminders to Calendar</button></div>`}
     </div>
 
     <h2 class="section">Workouts</h2>
@@ -783,7 +1049,7 @@ function renderProgram() {
 
     <h2 class="section">Your data</h2>
     <div class="card">
-      <p class="hint">Your log is saved on this device only. Back it up now and then, and use Restore to move it to a new phone. Copy your log to paste into a chat with Claude when you want advice or a program change.</p>
+      <p class="hint">${Cloud.signedIn ? 'Your log is saved on this device and in your account.' : 'Your log is saved on this device only. Back it up now and then, and use Restore to move it to a new phone.'} Copy your log to paste into a chat with Claude when you want advice or a program change.</p>
       <div class="btn-row">
         <button type="button" class="secondary" data-act="backup">Back up</button>
         <button type="button" class="secondary" data-act="restore">Restore</button>
@@ -841,6 +1107,12 @@ function toast(msg) { const t = $('#toast'); t.textContent = msg; t.hidden = fal
 function render() {
   const d = new Date();
   $('#topDate').textContent = DOW[d.getDay()] + ', ' + MON[d.getMonth()] + ' ' + d.getDate();
+  $('.tabs').hidden = !!ui.auth;
+  $('#view-auth').hidden = !ui.auth;
+  if (ui.auth) {
+    for (const v of ['today', 'progress', 'history', 'program']) $('#view-' + v).hidden = true;
+    renderAuth(); return;
+  }
   for (const v of ['today', 'progress', 'history', 'program']) {
     $('#view-' + v).hidden = v !== ui.tab;
     document.querySelector(`.tab[data-tab="${v}"]`).setAttribute('aria-current', v === ui.tab ? 'page' : 'false');
@@ -850,7 +1122,7 @@ function render() {
 function routeFromHash() {
   const h = location.hash.replace('#', '');
   ui.tab = ['today', 'progress', 'history', 'program'].includes(h) ? h : 'today';
-  ui.armClear = false; ui.armDel = null;
+  ui.armClear = false; ui.armDel = null; ui.armOut = false;
   render();
 }
 
@@ -876,7 +1148,7 @@ document.addEventListener('click', e => {
   } else if (act === 'finish') {
     finishWorkout();
   } else if (act === 'skip') {
-    stopRest();
+    stopRest(true);
   } else if (act === 'lift') {
     ui.lift = id; renderProgress();
   } else if (act === 'metric') {
@@ -904,6 +1176,37 @@ document.addEventListener('click', e => {
     $('#restoreFile').click();
   } else if (act === 'sample') {
     S = makeSample(); save(); toast('Example data loaded. Clear it here when you start logging.'); renderProgram();
+  } else if (act === 'login') {
+    busy(b, async () => { await Cloud.signIn(); ui.auth = null; toast('Signed in as ' + Cloud.user.name + '.'); render(); });
+  } else if (act === 'signup') {
+    const name = ($('#acctName').value || '').trim();
+    if (!name) { toast('Enter your name first.'); $('#acctName').focus(); return; }
+    busy(b, async () => { ui.recovery = await Cloud.signUp(name); ui.auth = 'code'; render(); });
+  } else if (act === 'recover') {
+    const code = ($('#recInput').value || '').trim();
+    if (!code) { toast('Enter your recovery code.'); return; }
+    busy(b, async () => { ui.recovery = await Cloud.recover(code); ui.auth = 'code'; ui.afterCode = 'addkey'; render(); });
+  } else if (act === 'copycode') {
+    try { navigator.clipboard.writeText(ui.recovery).then(() => toast('Code copied.'), () => toast('Press and hold the code to copy it.')); } catch (err) { toast('Press and hold the code to copy it.'); }
+  } else if (act === 'authdone') {
+    if (ui.auth === 'code' && ui.afterCode) { ui.auth = ui.afterCode; ui.afterCode = null; render(); return; }
+    ui.auth = null; ui.recovery = null; ui.tab = 'program'; location.hash = 'program'; render();
+    toast(Cloud.pushOn ? 'All set.' : 'Turn on notifications below to get reminders.');
+  } else if (act === 'addkey') {
+    busy(b, async () => { await Cloud.addPasskey(); ui.auth = null; toast('Passkey saved. Next time, sign in with Face ID.'); render(); });
+  } else if (act === 'skipauth') {
+    lsSet('ab-barbell-skipauth', '1'); ui.auth = null; render();
+  } else if (act === 'openauth') {
+    ui.auth = 'start'; render(); window.scrollTo({ top: 0 });
+  } else if (act === 'signout') {
+    if (!ui.armOut) { ui.armOut = true; renderProgram(); return; }
+    busy(b, async () => { await Cloud.signOut(); ui.armOut = false; ui.auth = 'start'; render(); toast('Signed out. Your log is still in your account.'); });
+  } else if (act === 'pushon') {
+    busy(b, async () => { await Cloud.enablePush(); renderProgram(); await Cloud.api('/push/test', { method: 'POST' }); toast('Notifications are on. A test is on its way.'); });
+  } else if (act === 'pushoff') {
+    busy(b, async () => { await Cloud.disablePush(); renderProgram(); toast('Notifications are off for this device.'); });
+  } else if (act === 'pushtest') {
+    busy(b, async () => { const r = await Cloud.api('/push/test', { method: 'POST' }); toast(r.sent ? 'Test sent. It should arrive in a few seconds.' : 'No device received it. Turn notifications off and on again.'); });
   } else if (act === 'copy') {
     const txt = logText(), ta = $('#copyFallback');
     const fallback = () => { ta.hidden = false; ta.value = txt; ta.focus(); ta.select(); toast('Select all and copy the text below.'); };
@@ -938,9 +1241,12 @@ document.addEventListener('submit', e => {
 });
 let rz; window.addEventListener('resize', () => { clearTimeout(rz); rz = setTimeout(() => { if (ui.tab === 'progress') renderProgress(); }, 150); });
 window.addEventListener('hashchange', routeFromHash);
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') { Cloud.sync(); if (!ui.auth && ui.tab === 'today') renderToday(); } });
+window.addEventListener('online', () => Cloud.sync());
 routeFromHash();
+Cloud.init();
 
-if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
+if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1')) {
   navigator.serviceWorker.register('sw.js').catch(() => {});
 }
 </script>

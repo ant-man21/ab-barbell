@@ -26,7 +26,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/configure-pages@v5
       - name: Collect app files
-        run: mkdir _site && cp -r index.html manifest.webmanifest sw.js icons _site/
+        run: cp -r app _site
       - uses: actions/upload-pages-artifact@v3
         with:
           path: _site
