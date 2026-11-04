@@ -22,11 +22,9 @@ your account whenever it's online. Each account's data is stored separately on C
 
 ## Hosting
 
-`.github/workflows/deploy.yml` publishes the app and server to Cloudflare on every push
-to `main`. It needs two repository secrets (Settings → Secrets and variables → Actions):
-
-- `CLOUDFLARE_API_TOKEN`: a Cloudflare API token made from the **Edit Cloudflare Workers** template
-- `CLOUDFLARE_ACCOUNT_ID`: shown on the Cloudflare **Workers & Pages** overview page
+Cloudflare builds and publishes the app and server straight from this repo
+(Cloudflare **Workers & Pages → Create → Import a repository → ab-barbell**).
+Every push to `main` goes live automatically; no keys or GitHub secrets are needed.
 
 The app's address is `https://ab-barbell.<your-subdomain>.workers.dev`.
 
