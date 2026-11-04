@@ -12,7 +12,7 @@ not_found_handling = "single-page-application"
 
 [vars]
 # Set to "false" once your own account exists to stop anyone else signing up.
-ALLOW_SIGNUPS = "true"
+ALLOW_SIGNUPS = "false"
 
 [[durable_objects.bindings]]
 name = "DIR"
