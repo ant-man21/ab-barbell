@@ -96,6 +96,11 @@ h2.section { font-family: var(--font-display); font-weight: 700; text-transform:
 
 .wk-head { display: flex; justify-content: space-between; align-items: flex-end; gap: 12px; flex-wrap: wrap; }
 .linkbtn { background: none; border: 0; padding: 6px 0; color: var(--accent); font-weight: 600; font-size: 14px; }
+.switches { display: flex; flex-direction: column; align-items: flex-end; }
+.plan-opt { display: block; width: 100%; text-align: left; font: inherit; color: inherit; cursor: pointer; }
+.plan-opt[aria-pressed="true"] { outline: 2px solid var(--accent); outline-offset: -2px; }
+.plan-opt .lift-name { font-size: 22px; }
+.plan-opt .wk-line { font-size: 14px; color: var(--muted, inherit); margin-top: 4px; }
 
 .bw-row { display: flex; align-items: center; gap: 10px; padding: 10px 14px; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; }
 .bw-row label { flex: 1; font-weight: 500; }
@@ -307,11 +312,36 @@ details.more[open] summary { margin-bottom: 8px; }
    sets x reps are fixed per lift. "prog" is how a lift moves up
    when every rep is hit: add weight, add a rep, or add a set.
    ================================================================ */
-const PROGRAM = {
-  workouts: {
-    A: { name: 'Workout A', lifts: ['squat', 'ohp', 'deadlift'] },
-    B: { name: 'Workout B', lifts: ['bench', 'pullup', 'squat'] }
+/* Each account picks a plan once, the first time it opens the app, and keeps it.
+   "order" is the rotation; "liftOrder" is how lifts are listed in Progress and Program. */
+const PLANS = {
+  boy: {
+    name: 'Boy', blurb: '2 workouts, alternating A / B',
+    order: ['A', 'B'],
+    workouts: {
+      A: { name: 'Workout A', lifts: ['squat', 'ohp', 'deadlift'] },
+      B: { name: 'Workout B', lifts: ['bench', 'pullup', 'squat'] }
+    },
+    liftOrder: ['squat', 'bench', 'deadlift', 'ohp', 'pullup']
   },
+  girl: {
+    // PLACEHOLDER until the real girl plan arrives: swap these lifts for the real ones.
+    name: 'Girl', blurb: '3 workouts, rotating A / B / C',
+    order: ['A', 'B', 'C'],
+    workouts: {
+      A: { name: 'Workout A', lifts: ['squat', 'bench'] },
+      B: { name: 'Workout B', lifts: ['deadlift', 'ohp'] },
+      C: { name: 'Workout C', lifts: ['squat', 'pullup'] }
+    },
+    liftOrder: ['squat', 'bench', 'deadlift', 'ohp', 'pullup']
+  }
+};
+// The active plan. Accounts made before plans existed have none yet and see the Boy workouts.
+function PLAN() { let p; try { p = S && S.plan; } catch (e) {} return PLANS[p] || PLANS.boy; }
+const nextAfter = w => { const o = PLAN().order, i = o.indexOf(w); return o[(i + 1) % o.length]; };
+
+const PROGRAM = {
+  get workouts() { return PLAN().workouts; },
   lifts: {
     squat:    { name: 'Squat',          sets: 5, reps: 5, inc: 5,  prog: 'weight', start: 135 },
     ohp:      { name: 'Overhead Press', sets: 5, reps: 5, inc: 5,  prog: 'weight', start: 65 },
@@ -327,7 +357,7 @@ const PROGRAM = {
   repCap: 4,                            // "+1 rep" mode: after reps+4, add weight, reset reps
   setCap: 2                             // "+1 set" mode: after sets+2, add weight, reset sets
 };
-const LIFT_ORDER = ['squat', 'bench', 'deadlift', 'ohp', 'pullup'];
+const liftOrder = () => PLAN().liftOrder;
 const STORE_KEY = 'ab-barbell-log.v1';
 const DAY = 86400000;
 const DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -386,16 +416,19 @@ function freshTargets() {
   return t;
 }
 function freshState(keep) {
-  return { v: 1, targets: freshTargets(), sessions: [], bw: [], next: 'A', current: null,
+  const s = { v: 1, targets: freshTargets(), sessions: [], bw: [], next: 'A', current: null,
     schedule: keep ? keep.schedule : { days: [1, 3, 5], time: '07:00' }, sample: false };
+  if (keep && keep.plan) s.plan = keep.plan;   // erasing data never changes the chosen plan
+  return s;
 }
-function makeSample() {
+function makeSample(keep) {
   let seed = 11; const rnd = () => (seed = (seed * 16807) % 2147483647, (seed - 1) / 2147483646);
-  const S = freshState(); S.sample = true;
+  const S = freshState(keep); S.sample = true;
   const t = S.targets;
   t.pullup.reps = 5;
   const ceil = { squat: 265, ohp: 112, deadlift: 305, bench: 172, pullup: 0 };
   const start = { squat: 135, ohp: 65, deadlift: 155, bench: 95 };
+  for (const id in PROGRAM.lifts) if (!(id in start)) { start[id] = PROGRAM.lifts[id].start; ceil[id] = Math.round(start[id] * 1.9); }
   let bwBase = 183.4, w = 'A';
   const d = new Date(); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() - 72);
   const end = new Date(); end.setHours(0, 0, 0, 0);
@@ -408,7 +441,7 @@ function makeSample() {
     for (const id of PROGRAM.workouts[w].lifts) {
       const tg = t[id];
       let pf = 0.08;
-      if (id !== 'pullup') { const x = Math.max(0, (tg.weight - start[id]) / (ceil[id] - start[id])); pf = 0.03 + 0.55 * x * x * x; }
+      if (!PROGRAM.lifts[id].bodyweight) { const x = Math.max(0, (tg.weight - start[id]) / (ceil[id] - start[id])); pf = 0.03 + 0.55 * x * x * x; }
       const ok = rnd() > pf;
       const sets = Array(tg.sets).fill(tg.reps);
       if (!ok) { const k = 1 + Math.floor(rnd() * 2); for (let j = Math.max(0, sets.length - k); j < sets.length; j++) sets[j] = Math.max(1, tg.reps - 1 - Math.floor(rnd() * 2)); }
@@ -419,7 +452,7 @@ function makeSample() {
     }
     S.sessions.push(sess);
     S.bw.push({ date: sess.date, v: bw });
-    w = w === 'A' ? 'B' : 'A';
+    w = nextAfter(w);
   }
   S.next = w;
   return S;
@@ -479,9 +512,9 @@ const Cloud = {
     try { this.config = await this.api('/config'); this.known = true; lsSet('ab-barbell-cloud', '1'); } catch (e) {}
     if (this.known && !this.signedIn && lsGet('ab-barbell-skipauth') !== '1') { ui.auth = 'start'; render(); }
     if (this.signedIn) {
-      await this.sync();
+      if (await this.sync()) askPlan();
       await this.refreshPush();
-    }
+    } else if (ui.auth !== 'start') askPlan();
   },
   remember(token, user) { this.token = token; this.user = user; lsSet('ab-barbell-token', token); lsSet('ab-barbell-user', JSON.stringify(user)); lsSet('ab-barbell-skipauth', null); },
   forget() { this.token = null; this.user = null; this.pushOn = false; lsSet('ab-barbell-token', null); lsSet('ab-barbell-user', null); lsSet('ab-barbell-push', null); },
@@ -498,9 +531,11 @@ const Cloud = {
   async sync() {
     if (!this.signedIn || this.syncing) return;
     this.syncing = true;
+    let ok = false;
     try {
       const remote = await this.api('/state');
       if (remote.state && remote.updatedAt > (S.updatedAt || 0)) {
+        if (!remote.state.plan && S.plan) remote.state.plan = S.plan;
         S = remote.state;
         for (const id in PROGRAM.lifts) if (!S.targets[id]) S.targets[id] = freshTargets()[id];
         persist(); render();
@@ -509,9 +544,11 @@ const Cloud = {
         this.dirty = false;
       }
       this.markSynced();
+      ok = true;
     } catch (e) {}
     this.syncing = false;
     syncLabel();
+    return ok;
   },
   markSynced() { this.lastSync = Date.now(); lsSet('ab-barbell-lastsync', String(this.lastSync)); },
 
@@ -587,6 +624,8 @@ const Cloud = {
   restStarted(seconds) { if (this.pushOn) this.api('/rest', { method: 'POST', body: { seconds } }).catch(() => {}); },
   restCancelled() { if (this.pushOn) this.api('/rest', { method: 'DELETE' }).catch(() => {}); }
 };
+// First time an account (or this device without an account) opens the app: pick a plan, once.
+function askPlan() { if (!S.plan && !ui.auth) { ui.auth = 'plan'; ui.planPick = null; render(); } }
 function syncLabel() { const el = document.getElementById('syncState'); if (el) el.innerHTML = syncStatusHtml(); }
 function syncStatusHtml() {
   if (!Cloud.signedIn) return '';
@@ -617,6 +656,19 @@ function renderAuth() {
       <div class="code-box" id="recCodeShow">${esc(ui.recovery || '')}</div>
       <div class="btn-row"><button type="button" class="secondary" data-act="copycode">Copy code</button></div>
       <button type="button" class="primary small" data-act="authdone">I saved it</button>`;
+    return;
+  }
+  if (ui.auth === 'plan') {
+    const pick = ui.planPick;
+    v.innerHTML = `
+      <div class="auth-hero"><div class="eyebrow">${Cloud.user?.name ? 'Hi ' + esc(Cloud.user.name) : 'One-time setup'}</div><h1 class="display">Choose your plan</h1>
+        <p>This sets your workouts. You pick once and it stays with your account. Your logged workouts are never changed.</p></div>
+      ${Object.keys(PLANS).map(k => { const P = PLANS[k]; return `<button type="button" class="card plan-opt" data-act="planpick" data-plan="${k}" aria-pressed="${pick === k}">
+        <div class="lift-name">${esc(P.name)}</div><div class="hint" style="margin:2px 0 6px">${esc(P.blurb)}</div>
+        ${P.order.map(w => `<div class="wk-line"><b>${w}:</b> ${P.workouts[w].lifts.map(id => PROGRAM.lifts[id].name).join(' · ')}</div>`).join('')}
+      </button>`; }).join('')}
+      <button type="button" class="primary small" data-act="planok" ${pick ? '' : 'disabled'}>${pick ? 'Start the ' + esc(PLANS[pick].name) + ' plan' : 'Pick a plan'}</button>
+      <p class="hint">You can’t switch plans later in the app.</p>`;
     return;
   }
   if (ui.auth === 'addkey') {
@@ -711,7 +763,7 @@ function renderToday() {
   const cur = ensureCurrent();
   const wk = PROGRAM.workouts[cur.workout];
   const due = nextDue();
-  const other = cur.workout === 'A' ? 'B' : 'A';
+  const others = PLAN().order.filter(w => w !== cur.workout);
   let banner;
   if (!due) banner = `<div class="banner"><div class="b-icon">${bellSvg()}</div><div><strong>No training days set</strong><span>Pick your days in Program to get reminders.</span></div></div>`;
   else if (due.offset === 0) banner = `<div class="banner due"><div class="b-icon">${bellSvg()}</div><div><strong>${wk.name} is due today</strong><span>Reminder set for ${fmtTime(S.schedule.time)}</span></div></div>`;
@@ -765,7 +817,7 @@ function renderToday() {
     ${S.sessions.length ? '' : `<div class="ask"><b>Welcome.</b> Before your first workout, set your starting weights in <a href="#program" style="color:inherit;font-weight:600">Program</a>. Pick weights you can lift for every rep with good form.</div>`}
     <div class="wk-head">
       <div><div class="eyebrow">${cur.workout === S.next ? 'Up next' : 'Swapped in'}</div><h1 class="display">${wk.name}</h1></div>
-      <button type="button" class="linkbtn" data-act="switch">Do Workout ${other} instead</button>
+      <span class="switches">${others.map(w => `<button type="button" class="linkbtn" data-act="switch" data-w="${w}">Do Workout ${w} instead</button>`).join('')}</span>
     </div>
     <div class="bw-row"><label for="sessBw">Body weight today</label><input id="sessBw" type="number" inputmode="decimal" step="0.1" min="50" max="600" value="${cur.bw ?? ''}" placeholder="180"><span class="muted">lb</span></div>
     ${cards}
@@ -798,7 +850,7 @@ function finishWorkout() {
     S.bw = S.bw.filter(b => b.date !== cur.date); S.bw.push({ date: cur.date, v: parseFloat(cur.bw) });
     S.bw.sort((a, b) => a.date < b.date ? -1 : 1);
   }
-  S.next = cur.workout === 'A' ? 'B' : 'A';
+  S.next = nextAfter(cur.workout);
   S.current = null;
   stopRest(true);
   save();
@@ -876,7 +928,7 @@ function renderProgress() {
   const bwPts = S.bw.map(b => ({ date: b.date, t: parseISO(b.date).getTime(), v: b.v, ok: true, detail: 'Body weight' }));
   const bwProj = project(bwPts, 28);
 
-  const rows = LIFT_ORDER.map(lid => {
+  const rows = liftOrder().map(lid => {
     const s = seriesFor(lid, 'strength'), p = project(s, 56), t = S.targets[lid];
     return `<tr><td>${PROGRAM.lifts[lid].name}</td><td>${t.sets}×${t.reps} @ ${wLabel(lid, t.weight)}</td><td>${s.length ? fmt(s[s.length - 1].v) : '–'}</td><td>${p ? fmt(p.end.v) : '–'}</td></tr>`;
   }).join('');
@@ -884,7 +936,7 @@ function renderProgress() {
   $('#view-progress').innerHTML = `
     <h1 class="display">Progress</h1>
     ${S.sample ? sampleNote() : ''}
-    <div class="lift-chips" role="group" aria-label="Lift">${LIFT_ORDER.map(l => `<button type="button" class="chip" data-act="lift" data-lift="${l}" aria-pressed="${l === id}">${PROGRAM.lifts[l].name}</button>`).join('')}</div>
+    <div class="lift-chips" role="group" aria-label="Lift">${liftOrder().map(l => `<button type="button" class="chip" data-act="lift" data-lift="${l}" aria-pressed="${l === id}">${PROGRAM.lifts[l].name}</button>`).join('')}</div>
     <div><div class="seg" role="group" aria-label="Measure">
       <button type="button" data-act="metric" data-m="strength" aria-pressed="${metric === 'strength'}">Strength (est. 1RM)</button>
       <button type="button" data-act="metric" data-m="volume" aria-pressed="${metric === 'volume'}">Volume</button>
@@ -1034,8 +1086,8 @@ function renderProgram() {
       <div class="btn-row"><button type="button" class="secondary" data-act="cal">Add reminders to Calendar</button></div>`}
     </div>
 
-    <h2 class="section">Workouts</h2>
-    ${['A', 'B'].map(w => `<div class="card prog-wk">
+    <h2 class="section">Workouts${S.plan ? ` · ${esc(PLAN().name)} plan` : ""}</h2>
+    ${PLAN().order.map(w => `<div class="card prog-wk">
       <div class="row"><span class="lift-name" style="font-size:20px">${PROGRAM.workouts[w].name}</span>${S.next === w ? '<span class="pill" style="background:var(--accent-soft);color:var(--accent)">Up next</span>' : ''}</div>
       ${PROGRAM.workouts[w].lifts.map(id => { const L = PROGRAM.lifts[id]; return `<div class="row"><span>${L.name}</span><span class="r"><b>${L.sets}×${L.reps}</b><br>${ruleTxt(id)}</span></div>`; }).join('')}
     </div>`).join('')}
@@ -1043,7 +1095,7 @@ function renderProgram() {
 
     <h2 class="section">Working weights</h2>
     <div class="card prog-wk">
-      ${LIFT_ORDER.map(id => { const t = S.targets[id]; return `<div class="row"><span>${PROGRAM.lifts[id].name}<br><span class="muted num" style="font-size:13px">${t.sets}×${t.reps}${t.fails ? ` · ${t.fails} miss${t.fails > 1 ? 'es' : ''} in a row` : ''}</span></span>
+      ${liftOrder().map(id => { const t = S.targets[id]; return `<div class="row"><span>${PROGRAM.lifts[id].name}<br><span class="muted num" style="font-size:13px">${t.sets}×${t.reps}${t.fails ? ` · ${t.fails} miss${t.fails > 1 ? 'es' : ''} in a row` : ''}</span></span>
         <span class="stepper"><button type="button" data-act="tw" data-lift="${id}" data-d="-1" aria-label="Less weight for ${PROGRAM.lifts[id].name}">−</button><span class="w" style="font-size:20px;min-width:96px">${wLabel(id, t.weight)}</span><button type="button" data-act="tw" data-lift="${id}" data-d="1" aria-label="More weight for ${PROGRAM.lifts[id].name}">+</button></span></div>`; }).join('')}
     </div>
 
@@ -1094,7 +1146,7 @@ async function openFile(text, name, type, preferShare) {
 
 function logText() {
   const lines = ['A/B Barbell log', 'Next: ' + PROGRAM.workouts[S.next].name, 'Working weights:'];
-  LIFT_ORDER.forEach(id => { const t = S.targets[id]; lines.push(`- ${PROGRAM.lifts[id].name}: ${t.sets}x${t.reps} @ ${wLabel(id, t.weight)}`); });
+  liftOrder().forEach(id => { const t = S.targets[id]; lines.push(`- ${PROGRAM.lifts[id].name}: ${t.sets}x${t.reps} @ ${wLabel(id, t.weight)}`); });
   lines.push('Recent sessions:');
   S.sessions.slice(-12).forEach(s => lines.push(`${s.date} ${s.workout}${s.bw ? ' BW ' + s.bw : ''}: ` + s.lifts.map(l => `${PROGRAM.lifts[l.id].name} ${wLabel(l.id, l.weight)} [${l.sets.join(',')}]`).join('; ')));
   return lines.join('\n');
@@ -1107,6 +1159,7 @@ function toast(msg) { const t = $('#toast'); t.textContent = msg; t.hidden = fal
 function render() {
   const d = new Date();
   $('#topDate').textContent = DOW[d.getDay()] + ', ' + MON[d.getMonth()] + ' ' + d.getDate();
+  if (ui.auth === 'plan' && S.plan) ui.auth = null;
   $('.tabs').hidden = !!ui.auth;
   $('#view-auth').hidden = !ui.auth;
   if (ui.auth) {
@@ -1144,7 +1197,7 @@ document.addEventListener('click', e => {
   } else if (act === 'next') {
     S.current.lifts[id].next = b.dataset.c; save(); renderToday();
   } else if (act === 'switch') {
-    newCurrent(S.current.workout === 'A' ? 'B' : 'A'); save(); renderToday();
+    if (PROGRAM.workouts[b.dataset.w]) newCurrent(b.dataset.w); save(); renderToday();
   } else if (act === 'finish') {
     finishWorkout();
   } else if (act === 'skip') {
@@ -1175,9 +1228,9 @@ document.addEventListener('click', e => {
   } else if (act === 'restore') {
     $('#restoreFile').click();
   } else if (act === 'sample') {
-    S = makeSample(); save(); toast('Example data loaded. Clear it here when you start logging.'); renderProgram();
+    S = makeSample(S); save(); toast('Example data loaded. Clear it here when you start logging.'); renderProgram();
   } else if (act === 'login') {
-    busy(b, async () => { await Cloud.signIn(); ui.auth = null; toast('Signed in as ' + Cloud.user.name + '.'); render(); });
+    busy(b, async () => { await Cloud.signIn(); ui.auth = null; toast('Signed in as ' + Cloud.user.name + '.'); render(); askPlan(); });
   } else if (act === 'signup') {
     const name = ($('#acctName').value || '').trim();
     if (!name) { toast('Enter your name first.'); $('#acctName').focus(); return; }
@@ -1192,10 +1245,20 @@ document.addEventListener('click', e => {
     if (ui.auth === 'code' && ui.afterCode) { ui.auth = ui.afterCode; ui.afterCode = null; render(); return; }
     ui.auth = null; ui.recovery = null; ui.tab = 'program'; location.hash = 'program'; render();
     toast(Cloud.pushOn ? 'All set.' : 'Turn on notifications below to get reminders.');
+    askPlan();
+  } else if (act === 'planpick') {
+    ui.planPick = PLANS[b.dataset.plan] ? b.dataset.plan : null; renderAuth();
+  } else if (act === 'planok') {
+    if (S.plan || !ui.planPick) { ui.auth = null; render(); return; }   // already chosen: it never changes
+    S.plan = ui.planPick;
+    if (S.current && !Object.values(S.current.lifts).some(l => l.done.some(x => x != null))) S.current = null;
+    if (!PROGRAM.workouts[S.next]) S.next = PLAN().order[0];
+    ui.auth = null; ui.planPick = null; save(); render();
+    toast(PLANS[S.plan].name + ' plan set. First up: ' + PROGRAM.workouts[S.next].name + '.');
   } else if (act === 'addkey') {
-    busy(b, async () => { await Cloud.addPasskey(); ui.auth = null; toast('Passkey saved. Next time, sign in with Face ID.'); render(); });
+    busy(b, async () => { await Cloud.addPasskey(); ui.auth = null; toast('Passkey saved. Next time, sign in with Face ID.'); render(); askPlan(); });
   } else if (act === 'skipauth') {
-    lsSet('ab-barbell-skipauth', '1'); ui.auth = null; render();
+    lsSet('ab-barbell-skipauth', '1'); ui.auth = null; render(); askPlan();
   } else if (act === 'openauth') {
     ui.auth = 'start'; render(); window.scrollTo({ top: 0 });
   } else if (act === 'signout') {
@@ -1221,6 +1284,7 @@ document.addEventListener('change', e => {
         const d = JSON.parse(r.result);
         if (!d || d.v !== 1 || !Array.isArray(d.sessions) || !d.targets) throw new Error('bad');
         for (const id in PROGRAM.lifts) if (!d.targets[id]) d.targets[id] = freshTargets()[id];
+        if (S.plan) d.plan = S.plan;   // a backup never changes the chosen plan
         S = d; save(); toast('Restored ' + S.sessions.length + ' workouts.'); render();
       } catch (err) { toast('That file is not an A/B Barbell backup.'); }
     };
