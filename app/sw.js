@@ -1,5 +1,5 @@
 // Offline support. Bump VERSION whenever the app files change so phones pick up the update.
-const VERSION = 'ab-barbell-v2';
+const VERSION = 'ab-barbell-v3';
 const APP = ['./', 'index.html', 'manifest.webmanifest', 'icons/apple-touch-icon.png', 'icons/icon-192.png', 'icons/icon-512.png', 'vendor/simplewebauthn-browser.umd.min.js'];
 
 self.addEventListener('install', e => {

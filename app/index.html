@@ -205,6 +205,15 @@ th { font-size: 11px; font-weight: 600; letter-spacing: .08em; text-transform: u
 .sess-foot { display: flex; justify-content: space-between; align-items: center; margin-top: 6px; font-size: 13px; color: var(--muted); }
 .sess-foot button { background: none; border: 0; color: var(--muted); font-size: 13px; padding: 4px 0; }
 .sess-foot button.arm { color: var(--accent); font-weight: 600; }
+.past { display: flex; flex-direction: column; gap: 14px; }
+.past input { padding: 9px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); font-variant-numeric: tabular-nums; }
+.past .p-lift { border-top: 1px solid var(--line); padding-top: 12px; display: flex; flex-direction: column; gap: 8px; }
+.past .p-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.past .p-row label { flex: 1; font-weight: 500; }
+.past .p-w { width: 96px; text-align: right; }
+.past .p-sets { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.past .p-sets input { width: 42px; text-align: center; padding: 8px 4px; }
+.past .p-sets button { width: 34px; height: 34px; border-radius: 8px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); font-size: 18px; }
 
 /* Program */
 .card { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 14px; display: flex; flex-direction: column; gap: 10px; }
@@ -999,6 +1008,7 @@ function renderHistory() {
     <h1 class="display">History</h1>
     ${S.sample ? sampleNote() : ''}
     <p class="hint">${S.sessions.length} workouts logged${S.sessions.length ? ` since ${fmtDate(S.sessions[0].date, true)}` : ''}.</p>
+    ${pastForm()}
     ${list.length ? list.map(s => `<article class="sess">
       <div class="sess-head"><span class="d"><span class="tag">${s.workout}</span>${fmtDate(s.date)}</span><span class="muted num">${s.bw ? fmt(s.bw) + ' lb BW' : ''}</span></div>
       ${s.lifts.map(l => { const ok = l.sets.every(r => r >= l.reps); return `<div class="sess-row">
@@ -1007,6 +1017,58 @@ function renderHistory() {
         <span class="ok ${ok ? 'y' : 'n'}">${ok ? '✓ Done' : '✗ Missed'}</span></div>`; }).join('')}
       <div class="sess-foot"><span></span><button type="button" data-act="del" data-id="${s.id}" class="${ui.armDel === s.id ? 'arm' : ''}">${ui.armDel === s.id ? 'Tap again to delete' : 'Delete'}</button></div>
     </article>`).join('') : '<p class="empty">No workouts yet. Your first one shows up here when you tap Finish.</p>'}`;
+}
+
+/* Log a workout from an earlier day. It goes into History and the graphs only:
+   working weights, misses and the next workout stay as they are. */
+function pastNew(wk) {
+  const d = new Date(); d.setDate(d.getDate() - 1);
+  const keep = ui.past || {};
+  wk = wk || keep.workout || Object.keys(PROGRAM.workouts)[0];
+  const lifts = {};
+  for (const id of PROGRAM.workouts[wk].lifts) {
+    const L = PROGRAM.lifts[id];
+    lifts[id] = { weight: L.bodyweight ? '0' : '', sets: Array(L.sets).fill(String(L.reps)) };
+  }
+  return { date: keep.date || iso(d), workout: wk, bw: keep.bw || '', lifts };
+}
+function pastForm() {
+  const P = ui.past;
+  if (!P) return `<div class="btn-row"><button type="button" class="secondary" data-act="pastopen">Add a past workout</button></div>`;
+  return `<div class="card past">
+    <div class="eyebrow">Add a past workout</div>
+    <div class="p-row"><label for="pastDate">Date</label><input id="pastDate" type="date" max="${todayISO()}" value="${esc(P.date)}"></div>
+    <div class="p-row"><span style="flex:1;font-weight:500">Workout</span><div class="seg" role="group" aria-label="Workout">${Object.keys(PROGRAM.workouts).map(w => `<button type="button" data-act="pastwk" data-w="${w}" aria-pressed="${w === P.workout}">${w}</button>`).join('')}</div></div>
+    ${PROGRAM.workouts[P.workout].lifts.map(id => { const L = PROGRAM.lifts[id], l = P.lifts[id]; return `<div class="p-lift">
+      <div class="p-row"><label for="pw-${id}">${L.name}</label><input id="pw-${id}" class="p-w" data-past="w" data-lift="${id}" type="number" inputmode="decimal" step="any" min="0" value="${esc(l.weight)}" placeholder="${L.bodyweight ? 'extra' : 'weight'}"><span class="muted">${L.bodyweight ? '+ lb' : 'lb'}</span></div>
+      <div class="p-sets"><span class="muted" style="font-size:13px;width:100%">Reps per set</span>${l.sets.map((r, i) => `<input data-past="r" data-lift="${id}" data-i="${i}" type="number" inputmode="numeric" min="0" max="50" value="${esc(r)}" aria-label="${L.name} set ${i + 1} reps">`).join('')}
+        <button type="button" data-act="pastset" data-lift="${id}" data-d="-1" aria-label="One less set">−</button><button type="button" data-act="pastset" data-lift="${id}" data-d="1" aria-label="One more set">+</button></div>
+    </div>`; }).join('')}
+    <div class="p-row" style="border-top:1px solid var(--line);padding-top:12px"><label for="pastBw">Body weight (optional)</label><input id="pastBw" class="p-w" type="number" inputmode="decimal" step="0.1" min="50" max="600" value="${esc(P.bw)}" placeholder="lb"></div>
+    <p class="hint" style="margin:0">Leave a lift’s weight empty to skip it. This adds to History and your graphs. Your current working weights and next workout don’t change.</p>
+    <div class="btn-row"><button type="button" class="primary small" data-act="pastsave">Save workout</button><button type="button" class="secondary" data-act="pastcancel">Cancel</button></div>
+  </div>`;
+}
+function pastSave() {
+  const P = ui.past;
+  if (!P.date || P.date > todayISO()) { toast('Pick a date up to today.'); return; }
+  const sess = { id: 's' + Date.now().toString(36), date: P.date, workout: P.workout, bw: parseFloat(P.bw) || null, lifts: [], past: true };
+  for (const id of PROGRAM.workouts[P.workout].lifts) {
+    const L = PROGRAM.lifts[id], l = P.lifts[id];
+    if (!L.bodyweight && String(l.weight).trim() === '') continue;
+    const weight = parseFloat(l.weight) || 0;
+    if (!L.bodyweight && weight < 1) { toast('Enter a weight for ' + L.name + '.'); return; }
+    const sets = l.sets.map(r => Math.max(0, Math.round(+r || 0)));
+    if (!sets.length) continue;
+    sess.lifts.push({ id, weight, reps: L.reps, sets });
+  }
+  if (!sess.lifts.length) { toast('Enter a weight for at least one lift.'); return; }
+  S.sessions.push(sess);
+  S.sessions.sort((a, b) => a.date < b.date ? -1 : a.date > b.date ? 1 : 0);
+  if (sess.bw) { S.bw = S.bw.filter(b => b.date !== sess.date); S.bw.push({ date: sess.date, v: sess.bw }); S.bw.sort((a, b) => a.date < b.date ? -1 : 1); }
+  ui.past = null; save();
+  toast(PROGRAM.workouts[sess.workout].name + ' on ' + fmtDate(sess.date) + ' added.');
+  renderHistory();
 }
 
 /* ---------- PROGRAM ---------- */
@@ -1122,7 +1184,7 @@ function render() {
 function routeFromHash() {
   const h = location.hash.replace('#', '');
   ui.tab = ['today', 'progress', 'history', 'program'].includes(h) ? h : 'today';
-  ui.armClear = false; ui.armDel = null; ui.armOut = false;
+  ui.armClear = false; ui.armDel = null; ui.armOut = false; if (ui.tab !== 'history') ui.past = null;
   render();
 }
 
@@ -1165,6 +1227,18 @@ document.addEventListener('click', e => {
   } else if (act === 'clear') {
     if (!ui.armClear) { ui.armClear = true; renderProgram(); return; }
     S = freshState(S); ui.armClear = false; save(); toast('Data cleared. Set your starting weights below.'); renderProgram();
+  } else if (act === 'pastopen') {
+    ui.past = pastNew(); renderHistory();
+  } else if (act === 'pastcancel') {
+    ui.past = null; renderHistory();
+  } else if (act === 'pastwk') {
+    const keep = ui.past; ui.past = pastNew(b.dataset.w); ui.past.date = keep.date; ui.past.bw = keep.bw; renderHistory();
+  } else if (act === 'pastset') {
+    const sets = ui.past.lifts[id].sets, L = PROGRAM.lifts[id];
+    if (+b.dataset.d > 0) { if (sets.length < 10) sets.push(sets.length ? sets[sets.length - 1] : String(L.reps)); } else if (sets.length > 1) sets.pop();
+    renderHistory();
+  } else if (act === 'pastsave') {
+    pastSave();
   } else if (act === 'del') {
     if (ui.armDel !== b.dataset.id) { ui.armDel = b.dataset.id; renderHistory(); return; }
     S.sessions = S.sessions.filter(s => s.id !== b.dataset.id); ui.armDel = null; save(); toast('Workout deleted.'); renderHistory();
@@ -1212,6 +1286,13 @@ document.addEventListener('click', e => {
     const fallback = () => { ta.hidden = false; ta.value = txt; ta.focus(); ta.select(); toast('Select all and copy the text below.'); };
     try { navigator.clipboard.writeText(txt).then(() => toast('Log copied. Paste it into Claude.'), fallback); } catch (err) { fallback(); }
   }
+});
+document.addEventListener('input', e => {
+  const P = ui.past, t = e.target; if (!P) return;
+  if (t.id === 'pastDate') P.date = t.value;
+  else if (t.id === 'pastBw') P.bw = t.value;
+  else if (t.dataset.past === 'w') P.lifts[t.dataset.lift].weight = t.value;
+  else if (t.dataset.past === 'r') P.lifts[t.dataset.lift].sets[+t.dataset.i] = t.value;
 });
 document.addEventListener('change', e => {
   if (e.target.id === 'restoreFile' && e.target.files[0]) {
